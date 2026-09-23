@@ -45,6 +45,14 @@
     transition: opacity .3s; padding: 0 20px;
   }
 
+  .status {
+    position: absolute; top: calc(env(safe-area-inset-top, 0px) + 74px);
+    left: 50%; transform: translateX(-50%); z-index: 5;
+    background: rgba(8,12,30,.85); border: 1px solid rgba(255,255,255,.18);
+    padding: 12px 24px; border-radius: 22px; pointer-events: none;
+    font-size: 16px; font-weight: 700; line-height: 1.5; white-space: pre-line;
+    max-width: 88vw; text-align: center;
+  }
   .screen {
     position: absolute; inset: 0; display: flex; flex-direction: column;
     align-items: center; justify-content: center; gap: 26px; text-align: center;
@@ -75,12 +83,12 @@
     <div class="dots" id="dots"></div>
   </div>
   <div class="banner" id="banner" hidden></div>
+  <div class="status" id="status" hidden></div>
 
   <div class="screen" id="startScreen">
     <h1>ABC Magic Finger ✨</h1>
     <p>Show your hand to the camera.<br>Trace the letter with your finger!</p>
     <button class="big-btn" id="startBtn">▶ Start</button>
-    <p class="err" id="errBox" hidden></p>
   </div>
 
   <div class="screen" id="endScreen" hidden>
@@ -125,10 +133,10 @@ const ui = {
   letterTag: document.getElementById('letterTag'),
   dots: document.getElementById('dots'),
   banner: document.getElementById('banner'),
+  status: document.getElementById('status'),
   start: document.getElementById('startScreen'),
   end: document.getElementById('endScreen'),
   endWords: document.getElementById('endWords'),
-  err: document.getElementById('errBox'),
 };
 
 let landmarker = null, lastVideoTime = -1;
@@ -409,7 +417,7 @@ function loop(nowMs) {
     if (trail.length > 22) trail.shift();
     checkHit(tip.x, tip.y);
   }
-  if (running && !celebrating) {
+  if (running && !celebrating && landmarker) {
     if (!handSeen && !ui.banner.textContent.startsWith('👋')) setBanner('👋 Show me your hand!');
     else if (handSeen && ui.banner.textContent.startsWith('👋')) setBanner(`Trace the letter ${LETTERS[letterIdx].ch}`);
   }
@@ -429,49 +437,76 @@ function pointerMove(e) {
 cv.addEventListener('pointermove', pointerMove);
 cv.addEventListener('pointerdown', pointerMove);
 
-async function boot() {
-  ui.err.hidden = true;
+function setStatus(t) {
+  ui.status.hidden = !t;
+  ui.status.textContent = t || '';
+}
+
+// iOS 要求在 user gesture 的同步流程裡解鎖音效與語音，不能放到 await 之後
+function boot() {
   try {
     actx = new (window.AudioContext || window.webkitAudioContext)();
-    await actx.resume();
-    speechSynthesis.speak(new SpeechSynthesisUtterance(' '));  // iOS 語音解鎖需要 user gesture
+    actx.resume();
+    speechSynthesis.speak(new SpeechSynthesisUtterance(' '));
   } catch (_) {}
+  startGame();     // 先讓遊戲能玩（觸控即可），鏡頭與辨識在背景接上
+  attachCamera();
+}
 
+async function attachCamera() {
+  setStatus('📷 Starting camera…');
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+      video: { facingMode: 'user', width: { ideal: 960 }, height: { ideal: 720 } },
       audio: false,
     });
     video.srcObject = stream;
     await video.play();
   } catch (err) {
-    showError(`開不了鏡頭：${err.name}\n\n` +
-      `iPad 上必須用 https:// 開啟（雙擊 start.command，照畫面上的網址開）。\n` +
-      `也請確認 Safari 設定沒有封鎖相機。\n\n` +
-      `現在可以先用手指直接碰螢幕描字母。`);
-    startGame();
+    setStatus(`☝️ No camera — draw with your finger on the screen\n(${err.name})`);
+    setTimeout(() => setStatus(''), 6000);
     return;
   }
 
   try {
+    setStatus('⏳ Loading hand tracking…');
     const fileset = await FilesetResolver.forVisionTasks('./vendor/wasm');
-    landmarker = await HandLandmarker.createFromOptions(fileset, {
-      baseOptions: { modelAssetPath: './models/hand_landmarker.task', delegate: 'GPU' },
-      runningMode: 'VIDEO', numHands: 1,
-    });
-  } catch (_) {
-    const fileset = await FilesetResolver.forVisionTasks('./vendor/wasm');
-    landmarker = await HandLandmarker.createFromOptions(fileset, {
-      baseOptions: { modelAssetPath: './models/hand_landmarker.task', delegate: 'CPU' },
-      runningMode: 'VIDEO', numHands: 1,
-    });
+    const model = await fetchModel('./models/hand_landmarker.task');
+    landmarker = await makeLandmarker(fileset, model);
+    setStatus('✋ Show me your hand!');
+    setTimeout(() => setStatus(''), 3500);
+  } catch (err) {
+    setStatus(`☝️ Hand tracking unavailable — use your finger on the screen\n(${err.name}: ${err.message})`);
   }
-  startGame();
 }
 
-function showError(msg) {
-  ui.err.hidden = false;
-  ui.err.textContent = msg;
+async function fetchModel(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`model HTTP ${res.status}`);
+  const total = +res.headers.get('content-length') || 0;
+  if (!res.body || !total) return await res.arrayBuffer();
+  const reader = res.body.getReader();
+  const chunks = []; let got = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value); got += value.length;
+    setStatus(`⏳ Loading hand tracking… ${Math.round((got / total) * 100)}%`);
+  }
+  const out = new Uint8Array(got);
+  let off = 0;
+  for (const c of chunks) { out.set(c, off); off += c.length; }
+  return out.buffer;
+}
+
+async function makeLandmarker(fileset, modelBuf) {
+  // 每次都給一份新的副本：MediaPipe 會接管 buffer，GPU 失敗後不能重用同一份
+  const opts = delegate => ({
+    baseOptions: { modelAssetBuffer: new Uint8Array(modelBuf.slice(0)), delegate },
+    runningMode: 'VIDEO', numHands: 1,
+  });
+  try { return await HandLandmarker.createFromOptions(fileset, opts('GPU')); }
+  catch (_) { return await HandLandmarker.createFromOptions(fileset, opts('CPU')); }
 }
 
 function startGame() {
