@@ -283,7 +283,7 @@ addEventListener('resize', resize);
 addEventListener('orientationchange', () => setTimeout(resize, 300));
 
 function initSnow() {
-  snow = Array.from({ length: 70 }, () => ({
+  snow = Array.from({ length: 48 }, () => ({
     x: Math.random() * innerWidth,
     y: Math.random() * innerHeight,
     r: 1.4 + Math.random() * 3.2,
@@ -315,7 +315,7 @@ function finishLetter() {
   addSticker(L.ch);
   setBanner(`${L.ch} ${L.phoneme} — ${L.word} ${L.emoji}\n❄️ Sticker earned!`);
   fanfare();
-  for (let i = 0; i < 90; i++) burst.push(makeBurst());
+  for (let i = 0; i < 55; i++) burst.push(makeBurst());
   setTimeout(() => say(`Great job! ${L.say}`), 500);
   setTimeout(() => {
     letterIdx++;
@@ -398,7 +398,7 @@ function draw(nowMs) {
     const base = box.size * 0.028;
     if (st.on) {
       st.pop = Math.max(0, st.pop - 0.04);
-      drawSnowflake(x, y, base * (1.5 + st.pop * 1.2), ICE, 22, nowMs / 2600 + i);
+      drawSnowflake(x, y, base * (1.5 + st.pop * 1.2), nowMs / 2600 + i);
     } else if (i === hitCount) {
       ctx.save();
       ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 4;
@@ -423,7 +423,6 @@ function draw(nowMs) {
   // 指尖魔法拖尾
   if (trail.length > 1) {
     ctx.save(); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    ctx.shadowColor = ICE_GLOW; ctx.shadowBlur = 14;
     for (let i = 1; i < trail.length; i++) {
       const a = i / trail.length;
       ctx.strokeStyle = `rgba(225,246,255,${a * 0.6})`;
@@ -447,7 +446,7 @@ function draw(nowMs) {
     c.x += c.vx; c.y += c.vy; c.vy += 0.26; c.vx *= 0.99;
     c.life -= 0.008; c.rot += c.spin;
     ctx.globalAlpha = Math.max(0, c.life);
-    drawSnowflake(c.x, c.y, c.r, ICE, 12, c.rot);
+    drawSnowflake(c.x, c.y, c.r, c.rot);
     ctx.globalAlpha = 1;
   });
 }
@@ -469,27 +468,44 @@ function isStrokeDone(si) {
   return stars.every(s => s.stroke !== si || s.on);
 }
 
-function drawSnowflake(x, y, r, color, glow, rot = 0) {
-  ctx.save();
-  ctx.translate(x, y); ctx.rotate(rot);
-  ctx.strokeStyle = color; ctx.fillStyle = color;
-  ctx.shadowColor = color; ctx.shadowBlur = glow;
-  ctx.lineWidth = Math.max(1.1, r * 0.2); ctx.lineCap = 'round';
+// 雪花只畫一次成貼圖。shadowBlur 極慢，每幀重畫上百片會拖垮手機幀率
+let flakeSprite = null;
+const SPRITE_SPAN = 2.94;   // 貼圖邊長相對於雪花半徑的比例
+
+function makeFlakeSprite() {
+  const S = 96;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const g = c.getContext('2d');
+  const r = S * 0.34;
+  g.translate(S / 2, S / 2);
+  g.strokeStyle = ICE; g.fillStyle = ICE;
+  g.shadowColor = ICE_GLOW; g.shadowBlur = S * 0.15;
+  g.lineWidth = Math.max(1.2, r * 0.2); g.lineCap = 'round';
   for (let i = 0; i < 6; i++) {
     const a = (i * Math.PI) / 3;
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
-    ctx.stroke();
+    g.beginPath();
+    g.moveTo(0, 0);
+    g.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+    g.stroke();
     const bx = Math.cos(a) * r * 0.58, by = Math.sin(a) * r * 0.58;
-    ctx.beginPath();
-    ctx.moveTo(bx, by);
-    ctx.lineTo(bx + Math.cos(a + 0.65) * r * 0.32, by + Math.sin(a + 0.65) * r * 0.32);
-    ctx.moveTo(bx, by);
-    ctx.lineTo(bx + Math.cos(a - 0.65) * r * 0.32, by + Math.sin(a - 0.65) * r * 0.32);
-    ctx.stroke();
+    g.beginPath();
+    g.moveTo(bx, by);
+    g.lineTo(bx + Math.cos(a + 0.65) * r * 0.32, by + Math.sin(a + 0.65) * r * 0.32);
+    g.moveTo(bx, by);
+    g.lineTo(bx + Math.cos(a - 0.65) * r * 0.32, by + Math.sin(a - 0.65) * r * 0.32);
+    g.stroke();
   }
-  ctx.beginPath(); ctx.arc(0, 0, r * 0.17, 0, 7); ctx.fill();
+  g.beginPath(); g.arc(0, 0, r * 0.17, 0, 7); g.fill();
+  return c;
+}
+
+function drawSnowflake(x, y, r, rot = 0) {
+  if (!flakeSprite) flakeSprite = makeFlakeSprite();
+  const d = r * SPRITE_SPAN;
+  ctx.save();
+  ctx.translate(x, y); ctx.rotate(rot);
+  ctx.drawImage(flakeSprite, -d / 2, -d / 2, d, d);
   ctx.restore();
 }
 
