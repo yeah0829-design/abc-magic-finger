@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>ABC Magic Finger</title>
+<style>
+  :root {
+    --ink: #fffdf5;
+    --star-off: rgba(255,255,255,.38);
+    --star-on: #ffd23f;
+    --target: #56ffb0;
+    --bg: #131a36;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background: var(--bg); color: var(--ink);
+    font-family: "Baloo 2", "Comic Sans MS", "Chalkboard SE", "PingFang TC", system-ui, sans-serif;
+    touch-action: none; user-select: none; -webkit-user-select: none;
+  }
+  #stage { position: fixed; inset: 0; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  video { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+
+  .hud {
+    position: absolute; top: env(safe-area-inset-top, 0); left: 0; right: 0;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 26px; pointer-events: none; font-size: 22px; font-weight: 700;
+    text-shadow: 0 2px 10px rgba(0,0,0,.6);
+  }
+  .hud .dots { display: flex; gap: 10px; }
+  .hud .dot {
+    width: 16px; height: 16px; border-radius: 50%;
+    background: rgba(255,255,255,.25); transition: all .3s;
+  }
+  .hud .dot.done { background: var(--star-on); box-shadow: 0 0 14px var(--star-on); }
+  .hud .dot.now { background: var(--target); transform: scale(1.35); }
+
+  .banner {
+    position: absolute; left: 0; right: 0; bottom: 8%;
+    text-align: center; font-size: clamp(20px, 3.4vw, 34px); font-weight: 800;
+    text-shadow: 0 3px 14px rgba(0,0,0,.7); pointer-events: none;
+    transition: opacity .3s; padding: 0 20px;
+  }
+
+  .screen {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 26px; text-align: center;
+    background: radial-gradient(circle at 50% 40%, #2a3570, #0d1228 75%);
+    padding: 30px; z-index: 10;
+  }
+  .screen h1 { font-size: clamp(38px, 8vw, 78px); margin: 0; letter-spacing: 2px; }
+  .screen p { font-size: clamp(16px, 2.6vw, 24px); margin: 0; opacity: .82; max-width: 22em; line-height: 1.6; }
+  .big-btn {
+    font: inherit; font-size: clamp(24px, 4vw, 38px); font-weight: 800;
+    padding: 22px 62px; border: none; border-radius: 999px; cursor: pointer;
+    background: linear-gradient(160deg, #ffd23f, #ff9a3c); color: #33240a;
+    box-shadow: 0 10px 0 #c9761f, 0 18px 40px rgba(0,0,0,.45);
+    transition: transform .12s, box-shadow .12s;
+  }
+  .big-btn:active { transform: translateY(6px); box-shadow: 0 4px 0 #c9761f, 0 8px 20px rgba(0,0,0,.45); }
+  .err { color: #ff9c9c; font-size: 17px; max-width: 26em; line-height: 1.6; white-space: pre-line; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="cam" playsinline muted autoplay></video>
+  <canvas id="cv"></canvas>
+
+  <div class="hud" id="hud" hidden>
+    <div id="letterTag"></div>
+    <div class="dots" id="dots"></div>
+  </div>
+  <div class="banner" id="banner" hidden></div>
+
+  <div class="screen" id="startScreen">
+    <h1>ABC Magic Finger ✨</h1>
+    <p>Show your hand to the camera.<br>Trace the letter with your finger!</p>
+    <button class="big-btn" id="startBtn">▶ Start</button>
+    <p class="err" id="errBox" hidden></p>
+  </div>
+
+  <div class="screen" id="endScreen" hidden>
+    <h1>You did it! 🎉</h1>
+    <p id="endWords"></p>
+    <button class="big-btn" id="againBtn">↻ Play again</button>
+  </div>
+</div>
+
+<svg id="measure" width="0" height="0" aria-hidden="true"></svg>
+
+<script type="module">
+import { FilesetResolver, HandLandmarker } from './vendor/vision_bundle.js';
+
+// ── 字母資料：strokes 是 SVG path，座標系統固定為 0-100 的方形 ──
+const LETTERS = [
+  { ch: 'A', word: 'apple',  emoji: '🍎', phoneme: '/æ/',
+    say: 'A says ah, ah, apple.',
+    strokes: ['M 50 10 L 20 90', 'M 50 10 L 80 90', 'M 29 66 L 71 66'] },
+  { ch: 'B', word: 'ball',   emoji: '⚽', phoneme: '/b/',
+    say: 'B says buh, buh, ball.',
+    strokes: ['M 26 10 L 26 90',
+              'M 26 10 L 52 10 A 20 20 0 0 1 52 50 L 26 50',
+              'M 26 50 L 55 50 A 20 20 0 0 1 55 90 L 26 90'] },
+  { ch: 'C', word: 'cat',    emoji: '🐱', phoneme: '/k/',
+    say: 'C says kuh, kuh, cat.',
+    strokes: ['M 70.9 23 A 33 33 0 1 0 70.9 77'] },
+];
+
+const STAR_GAP = 13;     // 星星間距（字母座標單位）
+const HIT_R = 9.5;       // 命中半徑，對四歲刻意放寬
+const SMOOTH = 0.45;     // 指尖平滑係數
+
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const video = document.getElementById('cam');
+const svgNS = 'http://www.w3.org/2000/svg';
+const measure = document.getElementById('measure');
+
+const ui = {
+  hud: document.getElementById('hud'),
+  letterTag: document.getElementById('letterTag'),
+  dots: document.getElementById('dots'),
+  banner: document.getElementById('banner'),
+  start: document.getElementById('startScreen'),
+  end: document.getElementById('endScreen'),
+  endWords: document.getElementById('endWords'),
+  err: document.getElementById('errBox'),
+};
+
+let landmarker = null, lastVideoTime = -1;
+let letterIdx = 0, stars = [], hitCount = 0;
+let paths = [];                 // Path2D，用於描繪字母輪廓
+let tip = null, tipRaw = null;  // 指尖（畫布座標）
+let trail = [], confetti = [];
+let handSeen = false, celebrating = false, running = false;
+let box = { x: 0, y: 0, size: 1 };
+
+// ── 音效：用 Web Audio 合成，不需要音檔 ──
+let actx = null;
+function beep(freq, dur = 0.12, type = 'sine', gain = 0.22) {
+  if (!actx) return;
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.type = type; o.frequency.value = freq;
+  g.gain.setValueAtTime(gain, actx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + dur);
+  o.connect(g).connect(actx.destination);
+  o.start(); o.stop(actx.currentTime + dur);
+}
+function fanfare() {
+  [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => beep(f, 0.22, 'triangle', 0.26), i * 110));
+}
+
+function say(text) {
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'en-US'; u.rate = 0.82; u.pitch = 1.15;
+  const v = speechSynthesis.getVoices().find(v => /en[-_]US/i.test(v.lang) && /Samantha|Female|Karen|Moira/i.test(v.name))
+         || speechSynthesis.getVoices().find(v => /^en/i.test(v.lang));
+  if (v) u.voice = v;
+  speechSynthesis.cancel();
+  speechSynthesis.speak(u);
+}
+
+// ── 沿 SVG path 取樣出 checkpoint ──
+function sampleStars(strokes) {
+  const out = [];
+  strokes.forEach((d, si) => {
+    const p = document.createElementNS(svgNS, 'path');
+    p.setAttribute('d', d);
+    measure.appendChild(p);
+    const len = p.getTotalLength();
+    const n = Math.max(3, Math.round(len / STAR_GAP));
+    for (let i = 0; i <= n; i++) {
+      const pt = p.getPointAtLength((len * i) / n);
+      out.push({ u: pt.x, v: pt.y, stroke: si, on: false, pop: 0 });
+    }
+    measure.removeChild(p);
+  });
+  return out;
+}
+
+function loadLetter(i) {
+  const L = LETTERS[i];
+  stars = sampleStars(L.strokes);
+  paths = L.strokes.map(d => new Path2D(d));
+  hitCount = 0; trail = []; celebrating = false;
+  ui.letterTag.textContent = `${L.ch}  ${L.phoneme}`;
+  ui.dots.innerHTML = LETTERS.map((_, k) =>
+    `<div class="dot ${k < i ? 'done' : k === i ? 'now' : ''}"></div>`).join('');
+  setBanner(`Trace the letter ${L.ch}`);
+  say(`Let's write the letter ${L.ch}!`);
+}
+
+function setBanner(text) {
+  ui.banner.hidden = !text;
+  ui.banner.textContent = text || '';
+}
+
+// 字母座標 (0-100) → 畫布像素
+const toPx = (u, v) => [box.x + (u / 100) * box.size, box.y + (v / 100) * box.size];
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cv.width = Math.round(innerWidth * dpr);
+  cv.height = Math.round(innerHeight * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const size = Math.min(innerWidth, innerHeight) * 0.74;
+  box = { x: (innerWidth - size) / 2, y: (innerHeight - size) / 2, size };
+}
+addEventListener('resize', resize);
+addEventListener('orientationchange', () => setTimeout(resize, 300));
+
+// ── 命中判定：允許往前看一顆，手移動快時不會卡住 ──
+function checkHit(px, py) {
+  if (celebrating || hitCount >= stars.length) return;
+  const rPx = (HIT_R / 100) * box.size;
+  for (let k = hitCount; k < Math.min(hitCount + 2, stars.length); k++) {
+    const [sx, sy] = toPx(stars[k].u, stars[k].v);
+    if (Math.hypot(px - sx, py - sy) < rPx) {
+      for (let j = hitCount; j <= k; j++) { stars[j].on = true; stars[j].pop = 1; }
+      hitCount = k + 1;
+      beep(440 + hitCount * 26, 0.09, 'sine', 0.18);
+      if (hitCount >= stars.length) finishLetter();
+      return;
+    }
+  }
+}
+
+function finishLetter() {
+  celebrating = true;
+  const L = LETTERS[letterIdx];
+  setBanner(`${L.ch} ${L.phoneme} — ${L.word} ${L.emoji}`);
+  fanfare();
+  for (let i = 0; i < 140; i++) confetti.push(makeConfetti());
+  setTimeout(() => say(`Great job! ${L.say}`), 500);
+  setTimeout(() => {
+    letterIdx++;
+    if (letterIdx < LETTERS.length) loadLetter(letterIdx);
+    else endGame();
+  }, 4200);
+}
+
+function endGame() {
+  running = false;
+  ui.hud.hidden = true; setBanner('');
+  ui.endWords.innerHTML = LETTERS.map(L => `${L.emoji} ${L.ch} — ${L.word}`).join('<br>');
+  ui.end.hidden = false;
+  say('You did it! A, apple. B, ball. C, cat. Hooray!');
+}
+
+function makeConfetti() {
+  const [cx, cy] = toPx(50, 50);
+  return {
+    x: cx + (Math.random() - .5) * box.size * .6,
+    y: cy + (Math.random() - .5) * box.size * .5,
+    vx: (Math.random() - .5) * 9, vy: -Math.random() * 11 - 3,
+    r: 4 + Math.random() * 7, life: 1,
+    c: ['#ffd23f', '#ff6f91', '#56ffb0', '#6ec6ff', '#ffffff'][(Math.random() * 5) | 0],
+  };
+}
+
+// ── 繪製 ──
+function draw(nowMs) {
+  ctx.clearRect(0, 0, innerWidth, innerHeight);
+
+  // 鏡頭背景（水平翻轉成鏡像），再壓暗讓字母看得清楚
+  if (video.videoWidth) {
+    const s = Math.max(innerWidth / video.videoWidth, innerHeight / video.videoHeight);
+    const dw = video.videoWidth * s, dh = video.videoHeight * s;
+    ctx.save();
+    ctx.translate(innerWidth, 0); ctx.scale(-1, 1);
+    ctx.drawImage(video, (innerWidth - dw) / 2, (innerHeight - dh) / 2, dw, dh);
+    ctx.restore();
+    ctx.fillStyle = 'rgba(12,16,38,.55)';
+    ctx.fillRect(0, 0, innerWidth, innerHeight);
+  }
+
+  // 字母輪廓
+  ctx.save();
+  ctx.translate(box.x, box.y);
+  ctx.scale(box.size / 100, box.size / 100);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.strokeStyle = 'rgba(255,255,255,.16)'; ctx.lineWidth = 13;
+  paths.forEach(p => ctx.stroke(p));
+  ctx.strokeStyle = 'rgba(255,255,255,.5)'; ctx.lineWidth = 2.4;
+  ctx.setLineDash([4, 4]);
+  paths.forEach(p => ctx.stroke(p));
+  ctx.setLineDash([]);
+  ctx.restore();
+
+  // 已完成的筆畫：發光
+  if (hitCount > 0) {
+    const doneStroke = stars[hitCount - 1].stroke;
+    ctx.save();
+    ctx.translate(box.x, box.y); ctx.scale(box.size / 100, box.size / 100);
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.strokeStyle = 'rgba(255,210,63,.75)'; ctx.lineWidth = 9;
+    ctx.shadowColor = '#ffd23f'; ctx.shadowBlur = 22;
+    for (let i = 0; i < paths.length; i++) {
+      const last = stars[hitCount - 1];
+      if (i < doneStroke || (i === doneStroke && last.on && isStrokeDone(i))) ctx.stroke(paths[i]);
+    }
+    ctx.restore();
+  }
+
+  // 星星
+  const pulse = 1 + Math.sin(nowMs / 220) * 0.16;
+  stars.forEach((st, i) => {
+    const [x, y] = toPx(st.u, st.v);
+    const base = box.size * 0.028;
+    if (st.on) {
+      st.pop = Math.max(0, st.pop - 0.04);
+      drawStar(x, y, base * (1.5 + st.pop * 1.1), '#ffd23f', 20);
+    } else if (i === hitCount) {
+      ctx.save();
+      ctx.strokeStyle = 'var(--target)'; ctx.strokeStyle = '#56ffb0';
+      ctx.lineWidth = 4; ctx.shadowColor = '#56ffb0'; ctx.shadowBlur = 18;
+      ctx.beginPath(); ctx.arc(x, y, base * 1.9 * pulse, 0, 7); ctx.stroke();
+      ctx.fillStyle = 'rgba(86,255,176,.28)'; ctx.fill();
+      ctx.restore();
+      if (i === 0) {
+        ctx.save();
+        ctx.fillStyle = '#56ffb0'; ctx.font = `700 ${box.size * 0.05}px system-ui`;
+        ctx.textAlign = 'center';
+        ctx.fillText('START', x, y - base * 3.1);
+        ctx.restore();
+      }
+    } else {
+      ctx.beginPath(); ctx.arc(x, y, base * 0.72, 0, 7);
+      ctx.fillStyle = 'rgba(255,255,255,.30)'; ctx.fill();
+    }
+  });
+
+  // 指尖殘影 + 筆尖
+  if (trail.length > 1) {
+    ctx.save(); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    for (let i = 1; i < trail.length; i++) {
+      const a = i / trail.length;
+      ctx.strokeStyle = `rgba(255,255,255,${a * 0.5})`;
+      ctx.lineWidth = box.size * 0.016 * a;
+      ctx.beginPath(); ctx.moveTo(trail[i - 1].x, trail[i - 1].y);
+      ctx.lineTo(trail[i].x, trail[i].y); ctx.stroke();
+    }
+    ctx.restore();
+  }
+  if (tip) {
+    ctx.save();
+    ctx.shadowColor = '#fff'; ctx.shadowBlur = 26;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(tip.x, tip.y, box.size * 0.022, 0, 7); ctx.fill();
+    ctx.restore();
+  }
+
+  // 彩帶
+  confetti = confetti.filter(c => c.life > 0);
+  confetti.forEach(c => {
+    c.x += c.vx; c.y += c.vy; c.vy += 0.42; c.life -= 0.009;
+    ctx.globalAlpha = Math.max(0, c.life);
+    ctx.fillStyle = c.c;
+    ctx.fillRect(c.x, c.y, c.r, c.r * 1.5);
+    ctx.globalAlpha = 1;
+  });
+}
+
+function isStrokeDone(si) {
+  return stars.every((s, i) => s.stroke !== si || s.on);
+}
+
+function drawStar(x, y, r, color, glow) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = glow;
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const rad = i % 2 ? r * 0.46 : r;
+    const a = (Math.PI / 5) * i - Math.PI / 2;
+    i ? ctx.lineTo(Math.cos(a) * rad, Math.sin(a) * rad)
+      : ctx.moveTo(Math.cos(a) * rad, Math.sin(a) * rad);
+  }
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+
+// ── 主迴圈 ──
+function loop(nowMs) {
+  requestAnimationFrame(loop);
+  if (landmarker && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+    lastVideoTime = video.currentTime;
+    const res = landmarker.detectForVideo(video, nowMs);
+    const lm = res.landmarks && res.landmarks[0];
+    if (lm) {
+      handSeen = true;
+      const s = Math.max(innerWidth / video.videoWidth, innerHeight / video.videoHeight);
+      const dw = video.videoWidth * s, dh = video.videoHeight * s;
+      const px = (innerWidth - dw) / 2 + (1 - lm[8].x) * dw;
+      const py = (innerHeight - dh) / 2 + lm[8].y * dh;
+      tipRaw = tipRaw ? { x: tipRaw.x + (px - tipRaw.x) * SMOOTH, y: tipRaw.y + (py - tipRaw.y) * SMOOTH }
+                      : { x: px, y: py };
+      tip = tipRaw;
+    } else {
+      handSeen = false; tip = null; tipRaw = null;
+    }
+  }
+  if (running && tip) {
+    trail.push({ x: tip.x, y: tip.y });
+    if (trail.length > 22) trail.shift();
+    checkHit(tip.x, tip.y);
+  }
+  if (running && !celebrating) {
+    if (!handSeen && !ui.banner.textContent.startsWith('👋')) setBanner('👋 Show me your hand!');
+    else if (handSeen && ui.banner.textContent.startsWith('👋')) setBanner(`Trace the letter ${LETTERS[letterIdx].ch}`);
+  }
+  draw(nowMs);
+}
+
+// ── 觸控／滑鼠也能描（Mac 測試用，iPad 上手指碰螢幕一樣有效）──
+function pointerMove(e) {
+  if (!running) return;
+  const t = e.touches ? e.touches[0] : e;
+  if (!t) return;
+  tip = { x: t.clientX, y: t.clientY };
+  trail.push({ x: tip.x, y: tip.y });
+  if (trail.length > 22) trail.shift();
+  checkHit(tip.x, tip.y);
+}
+cv.addEventListener('pointermove', pointerMove);
+cv.addEventListener('pointerdown', pointerMove);
+
+async function boot() {
+  ui.err.hidden = true;
+  try {
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+    await actx.resume();
+    speechSynthesis.speak(new SpeechSynthesisUtterance(' '));  // iOS 語音解鎖需要 user gesture
+  } catch (_) {}
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false,
+    });
+    video.srcObject = stream;
+    await video.play();
+  } catch (err) {
+    showError(`開不了鏡頭：${err.name}\n\n` +
+      `iPad 上必須用 https:// 開啟（雙擊 start.command，照畫面上的網址開）。\n` +
+      `也請確認 Safari 設定沒有封鎖相機。\n\n` +
+      `現在可以先用手指直接碰螢幕描字母。`);
+    startGame();
+    return;
+  }
+
+  try {
+    const fileset = await FilesetResolver.forVisionTasks('./vendor/wasm');
+    landmarker = await HandLandmarker.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: './models/hand_landmarker.task', delegate: 'GPU' },
+      runningMode: 'VIDEO', numHands: 1,
+    });
+  } catch (_) {
+    const fileset = await FilesetResolver.forVisionTasks('./vendor/wasm');
+    landmarker = await HandLandmarker.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: './models/hand_landmarker.task', delegate: 'CPU' },
+      runningMode: 'VIDEO', numHands: 1,
+    });
+  }
+  startGame();
+}
+
+function showError(msg) {
+  ui.err.hidden = false;
+  ui.err.textContent = msg;
+}
+
+function startGame() {
+  ui.start.hidden = true; ui.end.hidden = true; ui.hud.hidden = false;
+  letterIdx = 0; confetti = []; running = true;
+  resize();
+  loadLetter(0);
+}
+
+document.getElementById('startBtn').addEventListener('click', boot);
+document.getElementById('againBtn').addEventListener('click', startGame);
+resize();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
