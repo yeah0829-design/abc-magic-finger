@@ -527,9 +527,10 @@ async function attachCamera() {
   }
 
   try {
-    setStatus('⏳ Loading hand tracking…');
+    setStatus('⏳ Loading hand tracking…\n(first time only — then it stays on this device)');
     const fileset = await FilesetResolver.forVisionTasks('./vendor/wasm');
     const model = await fetchModel('./models/hand_landmarker.task');
+    setStatus('⏳ Starting engine…');   // 這段還要載 11.7MB wasm，沒有進度可回報
     landmarker = await makeLandmarker(fileset, model);
     setStatus('✋ Show me your hand!');
     setTimeout(() => setStatus(''), 3500);
@@ -549,7 +550,7 @@ async function fetchModel(url) {
     const { done, value } = await reader.read();
     if (done) break;
     chunks.push(value); got += value.length;
-    setStatus(`⏳ Loading hand tracking… ${Math.round((got / total) * 100)}%`);
+    setStatus(`⏳ Downloading… ${Math.round((got / total) * 100)}%`);
   }
   const out = new Uint8Array(got);
   let off = 0;
@@ -576,6 +577,10 @@ function startGame() {
 
 document.getElementById('startBtn').addEventListener('click', boot);
 document.getElementById('againBtn').addEventListener('click', startGame);
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').catch(() => {});
+}
+
 renderBook(ui.bookStart);
 resize();
 requestAnimationFrame(loop);
