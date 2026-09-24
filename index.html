@@ -226,16 +226,24 @@ function pickVoice() {
 voice = pickVoice();
 speechSynthesis.addEventListener('voiceschanged', () => { voice = pickVoice(); });
 
-function speak(parts) {
+// 一段唸完才接下一段，中間留停頓；整段唸完呼叫 onDone，
+// 讓畫面等語音講完再換字母，否則新字母的語音會把上一句砍斷
+function speak(parts, onDone) {
   speechSynthesis.cancel();
-  parts.forEach(p => {
+  let i = 0;
+  const next = () => {
+    if (i >= parts.length) { if (onDone) onDone(); return; }
+    const p = parts[i++];
     const u = new SpeechSynthesisUtterance(p.t);
     u.lang = 'en-US';
     u.pitch = p.pitch ?? 1.4;
     u.rate = p.rate ?? 0.95;
     if (voice) u.voice = voice;
+    u.onend = () => setTimeout(next, p.gap ?? 300);
+    u.onerror = () => setTimeout(next, 150);
     speechSynthesis.speak(u);
-  });
+  };
+  next();
 }
 
 const CHEERS = ['Wow!', 'Yay!', 'Woohoo!', 'Awesome!', 'Fantastic!', 'Look at you!'];
@@ -269,7 +277,7 @@ function loadLetter(i) {
     `<div class="dot ${k < i ? 'done' : k === i ? 'now' : ''}"></div>`).join('');
   setBanner(`Trace the letter ${L.ch}`);
   speak([
-    { t: pick(['Okay!', 'Ready?', 'Here we go!']), pitch: 1.6, rate: 1.1 },
+    { t: pick(['Okay!', 'Ready?', 'Here we go!']), pitch: 1.6, rate: 1.1, gap: 380 },
     { t: `Let's write the letter ${L.ch}!`, pitch: 1.42, rate: 0.95 },
   ]);
 }
@@ -316,17 +324,23 @@ function finishLetter() {
   setBanner(`${L.ch} ${L.phoneme} — ${L.word} ${L.emoji}\n⭐ Sticker earned!`);
   fanfare();
   for (let i = 0; i < 140; i++) confetti.push(makeConfetti());
-  setTimeout(() => speak([
-    { t: pick(CHEERS), pitch: 1.7, rate: 1.05 },
-    { t: `${L.ch} says`, pitch: 1.35, rate: 0.8 },
-    { t: `${L.sound}, ${L.sound}`, pitch: 1.55, rate: 0.7 },
-    { t: `${L.ch} is for ${L.word}!`, pitch: 1.45, rate: 0.88 },
-  ]), 500);
-  setTimeout(() => {
+
+  let moved = false;
+  const nextLetter = () => {
+    if (moved) return;
+    moved = true;
     letterIdx++;
     if (letterIdx < LETTERS.length) loadLetter(letterIdx);
     else endGame();
-  }, 4200);
+  };
+  setTimeout(nextLetter, 9500);   // 保險：語音若沒回應，畫面也不能卡住
+
+  setTimeout(() => speak([
+    { t: pick(CHEERS), pitch: 1.7, rate: 1.05, gap: 400 },
+    { t: `${L.ch} says`, pitch: 1.35, rate: 0.8, gap: 340 },
+    { t: `${L.sound}, ${L.sound}`, pitch: 1.55, rate: 0.7, gap: 420 },
+    { t: `${L.ch} is for ${L.word}!`, pitch: 1.45, rate: 0.88 },
+  ], () => setTimeout(nextLetter, 1200)), 900);   // 讓歡呼音效先響完
 }
 
 function endGame() {
@@ -338,9 +352,11 @@ function endGame() {
   renderBook(ui.bookEnd, LETTERS[LETTERS.length - 1].ch);
   ui.end.hidden = false;
   speak([
-    { t: 'You did it!', pitch: 1.7, rate: 1.0 },
-    { t: 'You are amazing!', pitch: 1.6, rate: 0.95 },
-    { t: 'A, apple. B, ball. C, cat.', pitch: 1.4, rate: 0.85 },
+    { t: 'You did it!', pitch: 1.7, rate: 1.0, gap: 420 },
+    { t: 'You are amazing!', pitch: 1.6, rate: 0.95, gap: 500 },
+    { t: 'A, apple.', pitch: 1.4, rate: 0.85, gap: 360 },
+    { t: 'B, ball.', pitch: 1.4, rate: 0.85, gap: 360 },
+    { t: 'C, cat.', pitch: 1.4, rate: 0.85, gap: 480 },
     { t: 'Hooray!', pitch: 1.75, rate: 1.05 },
   ]);
 }
