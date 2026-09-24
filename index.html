@@ -370,6 +370,20 @@ function draw(nowMs) {
     ctx.restore();
   }
 
+  // 方向箭頭：只畫目前這一筆剩下的部分，往前流動指出走向
+  if (hitCount < stars.length) {
+    const curStroke = stars[hitCount].stroke;
+    const ar = box.size * 0.03;
+    for (let i = hitCount; i < stars.length - 1; i += 2) {
+      if (stars[i].stroke !== curStroke || stars[i + 1].stroke !== curStroke) break;
+      const [x0, y0] = toPx(stars[i].u, stars[i].v);
+      const [x1, y1] = toPx(stars[i + 1].u, stars[i + 1].v);
+      const ph = nowMs / 420 - (i - hitCount) * 0.5;
+      drawChevron((x0 + x1) / 2, (y0 + y1) / 2, Math.atan2(y1 - y0, x1 - x0),
+                  ar, 0.3 + 0.5 * (0.5 + 0.5 * Math.sin(ph)), '#56ffb0');
+    }
+  }
+
   // 星星
   const pulse = 1 + Math.sin(nowMs / 220) * 0.16;
   stars.forEach((st, i) => {
@@ -385,17 +399,17 @@ function draw(nowMs) {
       ctx.beginPath(); ctx.arc(x, y, base * 1.9 * pulse, 0, 7); ctx.stroke();
       ctx.fillStyle = 'rgba(86,255,176,.28)'; ctx.fill();
       ctx.restore();
-      if (i === 0) {
-        ctx.save();
-        ctx.fillStyle = '#56ffb0'; ctx.font = `700 ${box.size * 0.05}px system-ui`;
-        ctx.textAlign = 'center';
-        ctx.fillText('START', x, y - base * 3.1);
-        ctx.restore();
-      }
     } else {
       ctx.beginPath(); ctx.arc(x, y, base * 0.72, 0, 7);
       ctx.fillStyle = 'rgba(255,255,255,.30)'; ctx.fill();
     }
+  });
+
+  // 筆順徽章 1 2 3：綠色是現在該寫的那一筆
+  badgeSpots().forEach(sp => {
+    const state = isStrokeDone(sp.si) ? 'done'
+      : (hitCount < stars.length && stars[hitCount].stroke === sp.si) ? 'now' : 'todo';
+    drawBadge(sp.x, sp.y, sp.si + 1, state, box.size * 0.030);
   });
 
   // 指尖殘影 + 筆尖
@@ -431,6 +445,61 @@ function draw(nowMs) {
 
 function isStrokeDone(si) {
   return stars.every((s, i) => s.stroke !== si || s.on);
+}
+
+// 筆順徽章的位置：放在每一筆的起點，起點重疊時沿各自方向推開（例如 A 的前兩筆都從頂點出發）
+function badgeSpots() {
+  const spots = [];
+  const strokeCount = paths.length;
+  for (let si = 0; si < strokeCount; si++) {
+    const i0 = stars.findIndex(s => s.stroke === si);
+    if (i0 < 0) continue;
+    const s0 = stars[i0], s1 = stars[i0 + 1] || s0;
+    const [x, y] = toPx(s0.u, s0.v);
+    const [x1, y1] = toPx(s1.u, s1.v);
+    const len = Math.hypot(x1 - x, y1 - y) || 1;
+    const dx = (x1 - x) / len, dy = (y1 - y) / len;
+    const off = box.size * 0.075;   // 往筆畫的反方向退開，才不會蓋住要描的路徑
+    spots.push({ si, x: x - dx * off, y: y - dy * off, dx, dy });
+  }
+  const minD = box.size * 0.062;
+  for (let a = 0; a < spots.length; a++) {
+    for (let b = a + 1; b < spots.length; b++) {
+      if (Math.hypot(spots[a].x - spots[b].x, spots[a].y - spots[b].y) < minD) {
+        spots[b].x -= spots[b].dx * minD;
+        spots[b].y -= spots[b].dy * minD;
+      }
+    }
+  }
+  return spots;
+}
+
+function drawChevron(x, y, ang, r, alpha, color) {
+  ctx.save();
+  ctx.translate(x, y); ctx.rotate(ang);
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = color; ctx.lineWidth = Math.max(2, r * 0.36);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(-r * 0.45, -r * 0.62);
+  ctx.lineTo(r * 0.5, 0);
+  ctx.lineTo(-r * 0.45, r * 0.62);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawBadge(x, y, n, state, r) {
+  const fill = state === 'now' ? '#56ffb0' : state === 'done' ? 'rgba(255,210,63,.55)' : 'rgba(255,255,255,.22)';
+  const ink = state === 'now' ? '#06301d' : state === 'done' ? '#3a2a06' : 'rgba(255,255,255,.7)';
+  ctx.save();
+  ctx.beginPath(); ctx.arc(x, y, r, 0, 7);
+  ctx.fillStyle = fill; ctx.fill();
+  ctx.lineWidth = 2.5; ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.stroke();
+  ctx.fillStyle = ink;
+  ctx.font = `800 ${r * 1.35}px system-ui`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(String(n), x, y + r * 0.06);
+  ctx.restore();
 }
 
 function drawStar(x, y, r, color, glow) {
