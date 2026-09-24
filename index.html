@@ -45,13 +45,14 @@
     transition: opacity .3s; padding: 0 20px; white-space: pre-line; line-height: 1.4;
   }
 
+  /* 放在字母下方的空白區：字母佔畫面中央，訊息擺上方會蓋住筆順徽章 */
   .status {
-    position: absolute; top: calc(env(safe-area-inset-top, 0px) + 74px);
+    position: absolute; bottom: 19%;
     left: 50%; transform: translateX(-50%); z-index: 5;
-    background: rgba(8,12,30,.85); border: 1px solid rgba(255,255,255,.18);
-    padding: 12px 24px; border-radius: 22px; pointer-events: none;
-    font-size: 16px; font-weight: 700; line-height: 1.5; white-space: pre-line;
-    max-width: 88vw; text-align: center;
+    background: rgba(8,12,30,.88); border: 1px solid rgba(255,255,255,.18);
+    padding: 10px 20px; border-radius: 20px; pointer-events: none;
+    font-size: 15px; font-weight: 700; line-height: 1.45; white-space: pre-line;
+    max-width: 76vw; text-align: center;
   }
   .screen {
     position: absolute; inset: 0; display: flex; flex-direction: column;
@@ -619,13 +620,15 @@ async function attachCamera() {
     video.srcObject = stream;
     await video.play();
   } catch (err) {
-    setStatus(`☝️ No camera — draw with your finger on the screen\n(${err.name})`);
+    setStatus(err.name === 'NotAllowedError'
+      ? '☝️ Finger mode\n(camera not allowed)'
+      : `☝️ Finger mode\n(${err.name})`);
     setTimeout(() => setStatus(''), 6000);
     return;
   }
 
   try {
-    setStatus('⏳ Loading hand tracking…\n(first time only — then it stays on this device)');
+    setStatus('⏳ Loading…\nfirst time only');
     const fileset = await FilesetResolver.forVisionTasks('./vendor/wasm');
     const model = await fetchModel('./models/hand_landmarker.task');
     setStatus('⏳ Starting engine…');   // 這段還要載 11.7MB wasm，沒有進度可回報
