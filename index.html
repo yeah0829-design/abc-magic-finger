@@ -130,16 +130,13 @@ import { FilesetResolver, HandLandmarker } from './vendor/vision_bundle.js';
 
 // ── 字母資料：strokes 是 SVG path，座標系統固定為 0-100 的方形 ──
 const LETTERS = [
-  { ch: 'A', word: 'apple',  emoji: '🍎', phoneme: '/æ/',
-    say: 'A says ah, ah, apple.',
+  { ch: 'A', word: 'apple',  emoji: '🍎', phoneme: '/æ/', sound: 'ah',
     strokes: ['M 50 10 L 20 90', 'M 50 10 L 80 90', 'M 29 66 L 71 66'] },
-  { ch: 'B', word: 'ball',   emoji: '⚽', phoneme: '/b/',
-    say: 'B says buh, buh, ball.',
+  { ch: 'B', word: 'ball',   emoji: '⚽', phoneme: '/b/', sound: 'buh',
     strokes: ['M 26 10 L 26 90',
               'M 26 10 L 52 10 A 20 20 0 0 1 52 50 L 26 50',
               'M 26 50 L 55 50 A 20 20 0 0 1 55 90 L 26 90'] },
-  { ch: 'C', word: 'cat',    emoji: '🐱', phoneme: '/k/',
-    say: 'C says kuh, kuh, cat.',
+  { ch: 'C', word: 'cat',    emoji: '🐱', phoneme: '/k/', sound: 'kuh',
     strokes: ['M 70.9 23 A 33 33 0 1 0 70.9 77'] },
 ];
 
@@ -214,15 +211,34 @@ function fanfare() {
   [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => beep(f, 0.22, 'triangle', 0.26), i * 110));
 }
 
-function say(text) {
-  const u = new SpeechSynthesisUtterance(text);
-  u.lang = 'en-US'; u.rate = 0.82; u.pitch = 1.15;
-  const v = speechSynthesis.getVoices().find(v => /en[-_]US/i.test(v.lang) && /Samantha|Female|Karen|Moira/i.test(v.name))
-         || speechSynthesis.getVoices().find(v => /^en/i.test(v.lang));
-  if (v) u.voice = v;
-  speechSynthesis.cancel();
-  speechSynthesis.speak(u);
+// 內建語音的音色改不了，活潑感要靠選對聲音 + 語調起伏，所以台詞拆成多段各自調整
+let voice = null;
+function pickVoice() {
+  const vs = speechSynthesis.getVoices().filter(v => /^en([-_]|$)/i.test(v.lang));
+  if (!vs.length) return null;
+  const score = v => (/enhanced|premium|natural/i.test(v.name) ? 100 : 0)
+    + (/Ava|Samantha|Allison|Zoe|Nicky|Karen|Moira|Tessa/i.test(v.name) ? 40 : 0)
+    + (/Siri/i.test(v.name) ? 25 : 0)
+    + (/^en[-_]US/i.test(v.lang) ? 20 : 0);
+  return vs.slice().sort((a, b) => score(b) - score(a))[0];
 }
+voice = pickVoice();
+speechSynthesis.addEventListener('voiceschanged', () => { voice = pickVoice(); });
+
+function speak(parts) {
+  speechSynthesis.cancel();
+  parts.forEach(p => {
+    const u = new SpeechSynthesisUtterance(p.t);
+    u.lang = 'en-US';
+    u.pitch = p.pitch ?? 1.4;
+    u.rate = p.rate ?? 0.95;
+    if (voice) u.voice = voice;
+    speechSynthesis.speak(u);
+  });
+}
+
+const CHEERS = ['Wow!', 'Yay!', 'Woohoo!', 'Awesome!', 'Fantastic!', 'Look at you!'];
+const pick = a => a[(Math.random() * a.length) | 0];
 
 // ── 沿 SVG path 取樣出 checkpoint ──
 function sampleStars(strokes) {
@@ -251,7 +267,10 @@ function loadLetter(i) {
   ui.dots.innerHTML = LETTERS.map((_, k) =>
     `<div class="dot ${k < i ? 'done' : k === i ? 'now' : ''}"></div>`).join('');
   setBanner(`Trace the letter ${L.ch}`);
-  say(`Let's write the letter ${L.ch}!`);
+  speak([
+    { t: pick(['Okay!', 'Ready?', 'Here we go!']), pitch: 1.6, rate: 1.1 },
+    { t: `Let's write the letter ${L.ch}!`, pitch: 1.42, rate: 0.95 },
+  ]);
 }
 
 function setBanner(text) {
@@ -296,7 +315,12 @@ function finishLetter() {
   setBanner(`${L.ch} ${L.phoneme} — ${L.word} ${L.emoji}\n⭐ Sticker earned!`);
   fanfare();
   for (let i = 0; i < 140; i++) confetti.push(makeConfetti());
-  setTimeout(() => say(`Great job! ${L.say}`), 500);
+  setTimeout(() => speak([
+    { t: pick(CHEERS), pitch: 1.7, rate: 1.05 },
+    { t: `${L.ch} says`, pitch: 1.35, rate: 0.8 },
+    { t: `${L.sound}, ${L.sound}`, pitch: 1.55, rate: 0.7 },
+    { t: `${L.ch} is for ${L.word}!`, pitch: 1.45, rate: 0.88 },
+  ]), 500);
   setTimeout(() => {
     letterIdx++;
     if (letterIdx < LETTERS.length) loadLetter(letterIdx);
@@ -312,7 +336,12 @@ function endGame() {
   ui.endWords.innerHTML = LETTERS.map(L => `${L.emoji} ${L.ch} — ${L.word}`).join('<br>');
   renderBook(ui.bookEnd, LETTERS[LETTERS.length - 1].ch);
   ui.end.hidden = false;
-  say('You did it! A, apple. B, ball. C, cat. Hooray!');
+  speak([
+    { t: 'You did it!', pitch: 1.7, rate: 1.0 },
+    { t: 'You are amazing!', pitch: 1.6, rate: 0.95 },
+    { t: 'A, apple. B, ball. C, cat.', pitch: 1.4, rate: 0.85 },
+    { t: 'Hooray!', pitch: 1.75, rate: 1.05 },
+  ]);
 }
 
 function makeConfetti() {
